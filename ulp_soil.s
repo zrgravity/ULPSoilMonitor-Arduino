@@ -13,6 +13,7 @@
    and C macros may be used in these files 
  */
 #include "soc/rtc_cntl_reg.h"
+#include "soc/rtc_io_reg.h"
 #include "soc/soc_ulp.h"
 
   /* Configure the number of ADC samples to average on each measurement.
@@ -80,6 +81,13 @@ soil5_shadow:
   .text
   .global entry
 entry:
+
+  /* set GPIO25/RTC_GPIO06 low to enable moisture sensors */
+enable_sensors:
+  WRITE_RTC_REG(RTC_IO_PAD_DAC1_REG, RTC_IO_PDAC1_HOLD_S, 1, 0)
+  WRITE_RTC_REG(RTC_GPIO_OUT_W1TC_REG, RTC_GPIO_OUT_DATA_W1TC_S + 6, 1, 1)
+  WRITE_RTC_REG(RTC_IO_PAD_DAC1_REG, RTC_IO_PDAC1_HOLD_S, 1, 1)
+
   /* r2: adc_soilx maps soil sensor to adc channel */
   /* r3: after measurement return to store soilx value to its shadow value */
 measure_soil0:
@@ -143,6 +151,11 @@ save_soil5:
   move r2, soil5_shadow
   st r0, r2, 0
 
+  /* set GPIO25/RTC_GPIO06 high to disable moisture sensors */
+disable_sensors:
+  WRITE_RTC_REG(RTC_IO_PAD_DAC1_REG, RTC_IO_PDAC1_HOLD_S, 1, 0)
+  WRITE_RTC_REG(RTC_GPIO_OUT_W1TS_REG, RTC_GPIO_OUT_DATA_W1TS_S + 6, 1, 1)
+  WRITE_RTC_REG(RTC_IO_PAD_DAC1_REG, RTC_IO_PDAC1_HOLD_S, 1, 1)
   /* get maximum change in soil value compared to last sent */
 calc_max_diff:
   /* reset max_diff, r0, r1 to zero */

@@ -69,11 +69,13 @@ static void init_ulp_program()
   adc1_config_width(ADC_WIDTH_BIT_12);
   adc1_ulp_enable();
 
-  /*
-  adc2_config_channel_atten(ADC2_CHANNEL_9, ADC_ATTEN_DB_0);
-  adc2_config_width(ADC_WIDTH_BIT_12);
-  adc2_ulp_enable()
-  */
+  gpio_deep_sleep_hold_en();
+
+  rtc_gpio_init(GPIO_NUM_25);
+  rtc_gpio_set_direction(GPIO_NUM_25, RTC_GPIO_MODE_OUTPUT_ONLY);
+  rtc_gpio_pullup_en(GPIO_NUM_25);
+  rtc_gpio_set_level(GPIO_NUM_25, 1);
+  rtc_gpio_hold_en(GPIO_NUM_25);
 
   /* Set ULP wake up period to 1000ms */
   ulp_set_wakeup_period(0, 10000 * 1000);
