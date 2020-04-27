@@ -1,4 +1,4 @@
-/* ULP Example: using ADC in deep sleep
+/* ULP Soil Sensor
 
    This example code is in the Public Domain (or CC0 licensed, at your option.)
 
@@ -7,14 +7,6 @@
    CONDITIONS OF ANY KIND, either express or implied.
 
    This file contains assembly code which runs on the ULP.
-
-   ULP wakes up to run this code at a certain period, determined by the values
-   in SENS_ULP_CP_SLEEP_CYCx_REG registers. On each wake up, the program
-   measures input voltage on the given ADC channel 'adc_oversampling_factor'
-   times. Measurements are accumulated and average value is calculated.
-   Average value is compared to the two thresholds: 'low_thr' and 'high_thr'.
-   If the value is less than 'low_thr' or more than 'high_thr', ULP wakes up
-   the chip from deep sleep.
 */
 
 /* ULP assembly files are passed through C preprocessor first, so include directives
@@ -35,14 +27,17 @@
   /* Define variables, which go into .bss section (zero-initialized data) */
   .bss
 
+  /* Stores maximum difference of last sent value vs. last measured value of all soil sensors */
   .global max_diff
 max_diff:
   .long 0
 
+  /* soilx value stores last sent value */
   .global soil0
 soil0:
   .long 0
 
+  /* soilx_shadow stores last measured value */
 soil0_shadow:
   .long 0
 
@@ -81,14 +76,12 @@ soil5:
 soil5_shadow:
   .long 0
   
-  /* Code goes into .text section */
+  /* Entry point into code. */
   .text
   .global entry
 entry:
-  /* do measurements using ADC */
-  /* r0 will be used as accumulator */
-  /* initialize the loop counter */
-
+  /* r2: adc_soilx maps soil sensor to adc channel */
+  /* r3: after measurement return to store soilx value to its shadow value */
 measure_soil0:
   move r2, adc_soil0
   move r3, save_soil0
@@ -96,6 +89,7 @@ measure_soil0:
 
   .global save_soil0
 save_soil0:
+  /* stores current measurement as shadow value */
   move r2, soil0_shadow
   st r0, r2, 0
 
@@ -149,35 +143,40 @@ save_soil5:
   move r2, soil5_shadow
   st r0, r2, 0
 
+  /* get maximum change in soil value compared to last sent */
 calc_max_diff:
-// -- get maximum change in soil value since last wake --
+  /* reset max_diff, r0, r1 to zero */
   move r0, max_diff
   move r1, 0
   st r1, r0, 0
   move r0, 0
 
-// -- soil 0
 soil0_diff:
   move r1, soil0
   move r2, soil0_shadow
   move r3, soil0_compare_diff
 
+  /* load last sent value and shadow value into r1, r2 */
   ld r1, r1, 0
   ld r2, r2, 0
 
+  /* calculate absolute difference between sent and shadow value to r0 */
   sub r0, r1, r2
+  /* in case r2 > r1, absolute_diff calcs r0 = r2 - r1 and returnso to r3 */
   jump absolute_diff, OV
 
 soil0_compare_diff:
+  /* load current max_diff to r1 */
   move r2, max_diff
   ld r1, r2, 0
-  
+
+  /* in case r1 (max_diff) > r0 (soil0_diff) continue to next soil diff */
   sub r3, r0, r1
   jump soil1_diff, OV
 
+  /* in case r0 (soil0_diff) > r1 (max_diff) store soil0_diff to max_value */
   st r0, r2, 0
 
-// -- soil 1
 soil1_diff:
   move r1, soil1
   move r2, soil1_shadow
@@ -198,7 +197,6 @@ soil1_compare_diff:
 
   st r0, r2, 0
 
-// -- soil 2
 soil2_diff:
   move r1, soil2
   move r2, soil2_shadow
@@ -219,7 +217,6 @@ soil2_compare_diff:
 
   st r0, r2, 0
 
-// -- soil 3
 soil3_diff:
   move r1, soil3
   move r2, soil3_shadow
@@ -240,7 +237,6 @@ soil3_compare_diff:
 
   st r0, r2, 0
 
-// -- soil 4
 soil4_diff:
   move r1, soil4
   move r2, soil4_shadow
@@ -261,7 +257,6 @@ soil4_compare_diff:
 
   st r0, r2, 0
 
-// -- soil 5
 soil5_diff:
   move r1, soil5
   move r2, soil5_shadow
@@ -282,7 +277,7 @@ soil5_compare_diff:
 
   st r0, r2, 0
 
-// -- wake in case max_diff >= soil_threshold, copy shadow values to output values
+/* wake in case max_diff >= soil_threshold, copy shadow values to output values else halt */
 try_wake:
   move r0, max_diff
   ld r0, r0, 0
@@ -293,16 +288,19 @@ try_wake:
 exit:
   halt
 
+/* reset accumulator r0 and stage counter */
 start_measurement:
   move r0, 0
   stage_rst
 
 measure:
-  /* measure and add value to accumulator */
+  /* measure adc value to r1, according to soil -> adc channel mapping */
   jump r2
 
 accumulate_measurement:
+  /* accumulate adc measurements in r0 */
   add r0, r0, r1
+
   /* increment loop counter and check exit condition */
   stage_inc 1
   jumps measure, adc_oversampling_factor, lt
@@ -310,8 +308,9 @@ accumulate_measurement:
   /* divide accumulator by adc_oversampling_factor.
      Since it is chosen as a power of two, use right shift */
   rsh r0, r0, adc_oversampling_factor_log
-  /* averaged value is now in r0; store it into last_result */
 
+  /* averaged value is now in r0
+     jump back to store value */
   jump r3
 
 absolute_diff:
@@ -343,6 +342,7 @@ adc_soil5:
   jump accumulate_measurement
 
 copy_and_wake:
+  /* copy shadow values into sensor value location */
   move r0, soil0_shadow
   move r1, soil0
   ld r0, r0, 0
@@ -368,6 +368,7 @@ copy_and_wake:
   ld r0, r0, 0
   st r0, r1, 0
 
+  /* wake main processor */
   .global wake_up
 wake_up:
   /* Check if the system can be woken up */
