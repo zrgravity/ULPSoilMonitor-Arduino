@@ -60,6 +60,7 @@ static void init_ulp_program()
   ESP_ERROR_CHECK(err);
 
   /* Configure ADC channel */
+  adc1_ulp_enable();
   adc1_config_channel_atten(ADC1_CHANNEL_7, ADC_ATTEN_DB_0);
   adc1_config_channel_atten(ADC1_CHANNEL_4, ADC_ATTEN_DB_0);
   adc1_config_channel_atten(ADC1_CHANNEL_5, ADC_ATTEN_DB_0);
@@ -67,7 +68,6 @@ static void init_ulp_program()
   adc1_config_channel_atten(ADC1_CHANNEL_3, ADC_ATTEN_DB_0);
   adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_DB_0);
   adc1_config_width(ADC_WIDTH_BIT_12);
-  adc1_ulp_enable();
 
   gpio_deep_sleep_hold_en();
 
