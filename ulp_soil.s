@@ -88,6 +88,40 @@ enable_sensors:
   WRITE_RTC_REG(RTC_GPIO_OUT_W1TC_REG, RTC_GPIO_OUT_DATA_W1TC_S + 6, 1, 1)
   WRITE_RTC_REG(RTC_IO_PAD_DAC1_REG, RTC_IO_PDAC1_HOLD_S, 1, 1)
 
+  /* wait about 125ms for SENSOR values to stabilize */
+  wait 40000 /* 5 ms */
+  wait 40000
+  wait 40000
+  wait 40000
+
+  wait 40000
+  wait 40000
+  wait 40000
+  wait 40000
+
+  wait 40000
+  wait 40000
+  wait 40000
+  wait 40000
+
+  wait 40000
+  wait 40000
+  wait 40000
+  wait 40000
+
+  wait 40000
+  wait 40000
+  wait 40000
+  wait 40000
+
+  wait 40000
+  wait 40000
+  wait 40000
+  wait 40000
+
+  wait 40000
+
+
   /* r2: adc_soilx maps soil sensor to adc channel */
   /* r3: after measurement return to store soilx value to its shadow value */
 measure_soil0:
