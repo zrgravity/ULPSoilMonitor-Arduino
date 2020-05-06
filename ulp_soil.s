@@ -21,7 +21,7 @@
   .set adc_oversampling_factor_log, 5
   .set adc_oversampling_factor, (1 << adc_oversampling_factor_log)
 
-  .set soil_threshold, 300
+  .set soil_threshold, 8
 
   .data   /* .data section */
 
