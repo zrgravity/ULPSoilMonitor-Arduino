@@ -18,7 +18,7 @@
 
   /* Configure the number of ADC samples to average on each measurement.
      For convenience, make it a power of 2. */
-  .set adc_oversampling_factor_log, 2
+  .set adc_oversampling_factor_log, 5
   .set adc_oversampling_factor, (1 << adc_oversampling_factor_log)
 
   .set soil_threshold, 300
