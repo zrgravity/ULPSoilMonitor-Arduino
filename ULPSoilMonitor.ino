@@ -9,6 +9,8 @@
 #define ADC_FACTOR (3.5f)
 #define ADC_VCC_PIN (ADC2_CHANNEL_9)
 
+#define ULP_PERIOD_MS (30000)
+
 extern const uint8_t ulp_main_bin_start[] asm("_binary_ulp_main_bin_start");
 extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
 
@@ -106,8 +108,8 @@ static void init_ulp_program()
   rtc_gpio_set_level(GPIO_NUM_25, 1);
   rtc_gpio_hold_en(GPIO_NUM_25);
 
-  /* Set ULP wake up period to 1000ms */
-  ulp_set_wakeup_period(0, 1000 * 1000);
+  /* Set ULP wake up period */
+  ulp_set_wakeup_period(0, ULP_PERIOD_MS * 1000);
 
   /* Disable pullup on GPIO15, in case it is connected to ground to suppress
      boot messages.
