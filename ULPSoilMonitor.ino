@@ -4,12 +4,11 @@
 #include "esp32/ulp.h"
 #include "ulp_soil.h"
 #include "ulptool.h"
+#include "config.h"
 #include <math.h>
 
 #define ADC_FACTOR (3.5f)
 #define ADC_VCC_PIN (ADC2_CHANNEL_9)
-
-#define ULP_PERIOD_MS (30000)
 
 extern const uint8_t ulp_main_bin_start[] asm("_binary_ulp_main_bin_start");
 extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
