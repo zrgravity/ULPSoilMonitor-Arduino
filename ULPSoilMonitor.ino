@@ -7,11 +7,27 @@
 #include "config.h"
 #include <math.h>
 
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+
 #define ADC_FACTOR (3.5f)
 #define ADC_VCC_PIN (ADC2_CHANNEL_9)
 
 extern const uint8_t ulp_main_bin_start[] asm("_binary_ulp_main_bin_start");
 extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
+
+volatile enum ulpsm_states {
+	ULPSM_RESETTING,
+	ULPSM_CONNECTING_WIFI,
+	ULPSM_CONNECTING_MQTT,
+	ULPSM_PUBLISHING_DATA,
+	ULPSM_PUBLISHED_DATA,
+	ULPSM_DISCONNECTING_MQTT,
+	ULPSM_DISCONNECTING_WIFI,
+	ULPSM_DONE,
+} state;
+
 
 struct {
 	float soil0;
@@ -33,10 +49,10 @@ struct soil_data {
 	bool valid = false;
 } soil;
 
-/* To be called once after power-on reset, to load ULP program into
-   RTC memory and configure the ADC.
- */
-static void init_ulp_program();
+WiFiClient wifi_client;
+PubSubClient mqtt(wifi_client);
+
+static void init_ulp_periphery();
 
 /* To be called every time before going into deep sleep.
    It starts the ULP program and resets measurement counter.
@@ -53,8 +69,11 @@ static float soil_moisture(uint16_t adc_value, float vcc, float offset, float gr
 /* fills soil_data struct */
 static void calculate_soil_data();
 
-/* logs current soil_data */
+/* logs current soil_data to Serial */
 static void print_soil_data();
+
+/* publish current soil_data via MQTT */
+static void publish_soil_data();
 
 void setup() {
 	Serial.begin(115200);
@@ -62,32 +81,111 @@ void setup() {
 	esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
 	if (cause == ESP_SLEEP_WAKEUP_ULP) {
 
-
 		Serial.printf("Deep sleep wakeup\n");
 		Serial.printf("max_diff:%d\n", (uint16_t)ulp_max_diff);
 
+		if ((uint16_t)ulp_max_diff == 4095) {
+			Serial.printf("Skip first measurement after reset\n");
+			state = ULPSM_DONE;
+			return;
+		}
+
 		measure_vcc();
+
+		WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+			Serial.printf("WiFi connected & got IP\n");
+			mqtt.connect(HOSTNAME);
+			state = ULPSM_CONNECTING_MQTT;
+		}, WiFiEvent_t::SYSTEM_EVENT_STA_GOT_IP);
+
+		WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+			if (state == ULPSM_DISCONNECTING_WIFI) {
+				state = ULPSM_DONE;
+			} else {
+				state = ULPSM_RESETTING;
+			}
+		}, WiFiEvent_t::SYSTEM_EVENT_STA_DISCONNECTED);
+
+		WiFi.begin(STA_SSID, STA_PASSWD);
+
+		state = ULPSM_CONNECTING_WIFI;
+
+		mqtt.setServer(MQTT_HOST, 1883);
+
 		calculate_soil_data();
 		print_soil_data();
+	}
 
-	} else {
+}
+
+void loop() {
+	mqtt.loop();
+
+	if (state == ULPSM_RESETTING) {
+		Serial.printf("Loading ULP...\n");
 
 		esp_err_t err = ulptool_load_binary(0, ulp_main_bin_start, (ulp_main_bin_end - ulp_main_bin_start) / sizeof(uint32_t));
 		ESP_ERROR_CHECK(err);
 
+		/* Set ULP wake up period */
+		ulp_set_wakeup_period(0, ULP_PERIOD_MS * 1000);
+
+		state = ULPSM_DONE;
 	}
 
-	Serial.printf("Entering deep sleep\n\n");
-	start_ulp_program();
-	ESP_ERROR_CHECK(esp_sleep_enable_ulp_wakeup());
-	esp_deep_sleep_start();
+	if (state == ULPSM_CONNECTING_MQTT) {
+		auto mqtt_state = mqtt.state();
+		if (mqtt_state == MQTT_CONNECTED) {
+			Serial.printf("MQTT connected.\n");
+			state = ULPSM_PUBLISHING_DATA;
+
+		} else if (mqtt_state == MQTT_CONNECTION_TIMEOUT || mqtt_state == MQTT_CONNECT_FAILED) {
+			Serial.printf("MQTT connection failed.\n");
+			state = ULPSM_DONE;
+
+		} else if (mqtt_state > MQTT_CONNECTED) {
+			Serial.printf("MQTT failed after connection: %d\n", mqtt_state);
+			state = ULPSM_DONE;
+
+		} else {
+			Serial.printf("MQTT unkown error: %d\n", mqtt_state);
+			state = ULPSM_DONE;
+		}
+	}
+
+	if (state == ULPSM_PUBLISHING_DATA) {
+		Serial.printf("Publishing data...\n");
+		publish_soil_data();
+		state = ULPSM_PUBLISHED_DATA;
+	}
+
+	if (state == ULPSM_PUBLISHED_DATA) {
+		wifi_client.flush();
+		mqtt.loop();
+		wifi_client.flush();
+
+		mqtt.disconnect();
+		state = ULPSM_DISCONNECTING_MQTT;
+	}
+
+	if (state == ULPSM_DISCONNECTING_MQTT) {
+		auto mqtt_state = mqtt.state();
+		if (mqtt_state != MQTT_CONNECTED) {
+			WiFi.disconnect();
+			state = ULPSM_DISCONNECTING_WIFI;
+		}
+	}
+
+	if (state == ULPSM_DONE) {
+		Serial.printf("Starting ULP & entering deep sleep\n\n");
+		start_ulp_program();
+
+		ESP_ERROR_CHECK(esp_sleep_enable_ulp_wakeup());
+		esp_deep_sleep_start();
+	}
 }
 
-void loop() {
-
-}
-
-static void init_ulp_program()
+static void init_ulp_periphery()
 {
 	/* Configure ADC channel */
 	adc1_ulp_enable();
@@ -108,9 +206,6 @@ static void init_ulp_program()
 	rtc_gpio_set_level(GPIO_NUM_25, 1);
 	rtc_gpio_hold_en(GPIO_NUM_25);
 
-	/* Set ULP wake up period */
-	ulp_set_wakeup_period(0, ULP_PERIOD_MS * 1000);
-
 	/* Disable pullup on GPIO15, in case it is connected to ground to suppress
 	   boot messages.
 	 */
@@ -120,7 +215,8 @@ static void init_ulp_program()
 
 static void start_ulp_program()
 {
-	init_ulp_program();
+
+	init_ulp_periphery();
 
 	/* Start the program */
 	esp_err_t err = ulp_run((&ulp_entry - RTC_SLOW_MEM) / sizeof(uint32_t));
@@ -213,4 +309,66 @@ static void print_soil_data()
 	Serial.printf("Soil3:%d -> %f\n", (uint16_t)ulp_soil3, soil.soil3);
 	Serial.printf("Soil4:%d -> %f\n", (uint16_t)ulp_soil4, soil.soil4);
 	Serial.printf("Soil5:%d -> %f\n", (uint16_t)ulp_soil5, soil.soil5);
+}
+
+static void publish_vcc()
+{
+	String topic = String("homeassistant/sensor/") + String(HOSTNAME) +  String("/vcc/");
+	String id = String(HOSTNAME) + String("_vcc");
+
+	StaticJsonDocument<512> config;
+	config["name"] = id;
+	config["state_topic"] = topic + "state";
+	config["unit_of_measurement"] = "V";
+	config["unique_id"] = id;
+
+	JsonObject dev = config.createNestedObject("device");
+	dev["name"] = HOSTNAME;
+	dev["identifiers"] = HOSTNAME;
+	dev["manufacturer"] = "Flobs";
+	dev["model"] = "ULPSoilMonitor v2.0";
+
+	size_t message_size = measureJson(config);
+	mqtt.beginPublish((topic + "config").c_str(), message_size, true);
+	serializeJson(config, mqtt);
+	mqtt.endPublish();
+
+	String vcc = String(soil.vcc);
+	mqtt.publish((topic + "state").c_str(), vcc.c_str(), true);
+}
+
+static void publish_soil(uint8_t index, float value)
+{
+	String topic = String("homeassistant/sensor/") + String(HOSTNAME) +  String("/soil") + String(index) + String("/");
+	String id = String(HOSTNAME) + String("_soil") + String(index);
+
+	StaticJsonDocument<512> config;
+	config["name"] = id;
+	config["state_topic"] = topic + "state";
+	config["unit_of_measurement"] = "%";
+	config["unique_id"] = id;
+
+	JsonObject dev = config.createNestedObject("device");
+	dev["name"] = HOSTNAME;
+	dev["identifiers"] = HOSTNAME;
+	dev["manufacturer"] = "Flobs";
+	dev["model"] = "ULPSoilMonitor v2.0";
+
+	size_t message_size = measureJson(config);
+	mqtt.beginPublish((topic + "config").c_str(), message_size, true);
+	serializeJson(config, mqtt);
+	mqtt.endPublish();
+
+	mqtt.publish((topic + "state").c_str(), String(value).c_str(), true);
+}
+
+static void publish_soil_data()
+{
+	publish_vcc();
+	publish_soil(0, soil.soil0);
+	publish_soil(1, soil.soil1);
+	publish_soil(2, soil.soil2);
+	publish_soil(3, soil.soil3);
+	publish_soil(4, soil.soil4);
+	publish_soil(5, soil.soil5);
 }
