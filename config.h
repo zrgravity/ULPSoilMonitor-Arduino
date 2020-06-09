@@ -3,7 +3,7 @@
 
 #define STA_SSID "SSID"
 #define STA_PASSWD "PASSWORD"
-#define HOSTNAME "ulpsm"
+#define HOSTNAME "ulpsm-01"
 
 #define MQTT_HOST "10.0.0.1"
 
