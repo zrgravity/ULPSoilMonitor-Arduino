@@ -1,10 +1,3 @@
-/*
- * Must allocate more memory for the ulp in 
- * esp32/tools/sdk/include/sdkconfig.h 
- * -> #define CONFIG_ULP_COPROC_RESERVE_MEM
- * for this sketch to compile. 2048b seems 
- * good.
- */
 #include "esp_sleep.h"
 #include "driver/rtc_io.h"
 #include "driver/adc.h"
@@ -39,17 +32,17 @@ struct soil_data {
   bool valid = false;
 } soil;
 
-/* This function is called once after power-on reset, to load ULP program into
+/* To be called once after power-on reset, to load ULP program into
    RTC memory and configure the ADC.
 */
 static void init_ulp_program();
 
-/* This function is called every time before going into deep sleep.
+/* To be called every time before going into deep sleep.
    It starts the ULP program and resets measurement counter.
 */
 static void start_ulp_program();
 
-/* measures voltage on GPIO26 */
+/* measures voltage on ADC_VCC_PIN(GPIO26) */
 static void measure_vcc();
 
 static void init_sensor_coefficients();
@@ -69,7 +62,6 @@ void setup() {
   if (cause == ESP_SLEEP_WAKEUP_ULP) {
 
     Serial.printf("Deep sleep wakeup\n");
-    /* Count temperature form -5 ℃ , so ulp_temperature minus 5 */
     Serial.printf("max_diff:%d\n", (uint16_t)ulp_max_diff);
 
     measure_vcc();
