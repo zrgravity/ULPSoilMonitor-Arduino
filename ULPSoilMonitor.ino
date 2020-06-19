@@ -19,6 +19,7 @@ extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
 
 volatile enum ulpsm_states {
 	ULPSM_RESETTING,
+	ULPSM_SETUP,
 	ULPSM_CONNECTING_WIFI,
 	ULPSM_CONNECTING_MQTT,
 	ULPSM_PUBLISHING_CONFIG,
@@ -74,11 +75,31 @@ static void calculate_soil_data();
 /* logs current soil_data to Serial */
 static void print_soil_data();
 
+/* publish sensor config */
+static void publish_sensor_config();
+
 /* publish current soil_data via MQTT */
 static void publish_soil_data();
 
 void setup() {
 	Serial.begin(115200);
+
+	WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+		Serial.printf("WiFi connected & got IP\n");
+		mqtt.connect(HOSTNAME);
+		state = ULPSM_CONNECTING_MQTT;
+	}, WiFiEvent_t::SYSTEM_EVENT_STA_GOT_IP);
+
+	WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+		Serial.printf("WiFi disconnected, ");
+		if (state == ULPSM_DISCONNECTING_WIFI) {
+			Serial.printf("done.\n");
+			state = ULPSM_DONE;
+		} else {
+			Serial.printf("seems unexpected, resetting.\n");
+			state = ULPSM_RESETTING;
+		}
+	}, WiFiEvent_t::SYSTEM_EVENT_STA_DISCONNECTED);
 
 	esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
 	if (cause == ESP_SLEEP_WAKEUP_ULP) {
@@ -94,28 +115,7 @@ void setup() {
 
 		measure_vcc();
 
-		WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-			Serial.printf("WiFi connected & got IP\n");
-			mqtt.connect(HOSTNAME);
-			state = ULPSM_CONNECTING_MQTT;
-		}, WiFiEvent_t::SYSTEM_EVENT_STA_GOT_IP);
-
-		WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
-			if (state == ULPSM_DISCONNECTING_WIFI) {
-				state = ULPSM_DONE;
-			} else {
-				state = ULPSM_RESETTING;
-			}
-		}, WiFiEvent_t::SYSTEM_EVENT_STA_DISCONNECTED);
-
-		WiFi.begin(STA_SSID, STA_PASSWD);
-
-		state = ULPSM_CONNECTING_WIFI;
-
-		mqtt.setServer(MQTT_HOST, 1883);
-
-		calculate_soil_data();
-		print_soil_data();
+		state = ULPSM_SETUP;
 	}
 
 }
@@ -129,9 +129,23 @@ void loop() {
 		esp_err_t err = ulptool_load_binary(0, ulp_main_bin_start, (ulp_main_bin_end - ulp_main_bin_start) / sizeof(uint32_t));
 		ESP_ERROR_CHECK(err);
 
+		/* Set ULP wake up period */
 		ulp_set_wakeup_period(0, ULP_PERIOD_MS * 1000);
 
-		state = ULPSM_DONE;
+		state = ULPSM_SETUP;
+	}
+
+	if (state == ULPSM_SETUP) {
+		Serial.printf("Setup WiFi, MQTT, Soil data...\n");
+
+		WiFi.begin(STA_SSID, STA_PASSWD);
+
+		mqtt.setServer(MQTT_HOST, 1883);
+
+		calculate_soil_data();
+		print_soil_data();
+
+		state = ULPSM_CONNECTING_WIFI;
 	}
 
 	if (state == ULPSM_CONNECTING_MQTT) {
@@ -180,6 +194,7 @@ void loop() {
 	}
 
 	if (state == ULPSM_DISCONNECTING_MQTT) {
+		Serial.printf("Disconnecting MQTT & WiFi...\n");
 		auto mqtt_state = mqtt.state();
 		if (mqtt_state != MQTT_CONNECTED) {
 			WiFi.disconnect();
