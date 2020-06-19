@@ -21,6 +21,8 @@ volatile enum ulpsm_states {
 	ULPSM_RESETTING,
 	ULPSM_CONNECTING_WIFI,
 	ULPSM_CONNECTING_MQTT,
+	ULPSM_PUBLISHING_CONFIG,
+	ULPSM_PUBLISHED_CONFIG,
 	ULPSM_PUBLISHING_DATA,
 	ULPSM_PUBLISHED_DATA,
 	ULPSM_DISCONNECTING_MQTT,
@@ -127,7 +129,6 @@ void loop() {
 		esp_err_t err = ulptool_load_binary(0, ulp_main_bin_start, (ulp_main_bin_end - ulp_main_bin_start) / sizeof(uint32_t));
 		ESP_ERROR_CHECK(err);
 
-		/* Set ULP wake up period */
 		ulp_set_wakeup_period(0, ULP_PERIOD_MS * 1000);
 
 		state = ULPSM_DONE;
@@ -137,7 +138,11 @@ void loop() {
 		auto mqtt_state = mqtt.state();
 		if (mqtt_state == MQTT_CONNECTED) {
 			Serial.printf("MQTT connected.\n");
-			state = ULPSM_PUBLISHING_DATA;
+			esp_reset_reason_t reason = esp_reset_reason();
+			if (reason == ESP_RST_DEEPSLEEP)
+				state = ULPSM_PUBLISHING_DATA;
+			else
+				state = ULPSM_PUBLISHING_CONFIG;
 
 		} else if (mqtt_state == MQTT_CONNECTION_TIMEOUT || mqtt_state == MQTT_CONNECT_FAILED) {
 			Serial.printf("MQTT connection failed.\n");
@@ -153,13 +158,19 @@ void loop() {
 		}
 	}
 
+	if (state == ULPSM_PUBLISHING_CONFIG) {
+		Serial.printf("Publishing config...\n");
+		publish_sensor_config();
+		state = ULPSM_PUBLISHED_CONFIG;
+	}
+
 	if (state == ULPSM_PUBLISHING_DATA) {
 		Serial.printf("Publishing data...\n");
 		publish_soil_data();
 		state = ULPSM_PUBLISHED_DATA;
 	}
 
-	if (state == ULPSM_PUBLISHED_DATA) {
+	if (state == ULPSM_PUBLISHED_DATA || state == ULPSM_PUBLISHED_CONFIG) {
 		wifi_client.flush();
 		mqtt.loop();
 		wifi_client.flush();
@@ -311,27 +322,89 @@ static void print_soil_data()
 	Serial.printf("Soil5:%d -> %f\n", (uint16_t)ulp_soil5, soil.soil5);
 }
 
-static void publish_vcc()
+static void get_device(JsonObject *dev)
 {
-	String topic = String("homeassistant/sensor/") + String(HOSTNAME) +  String("/vcc/");
-	String id = String(HOSTNAME) + String("_vcc");
+	(*dev)["name"] = HOSTNAME;
+	(*dev)["identifiers"] = HOSTNAME;
+	(*dev)["manufacturer"] = "Flobs";
+	(*dev)["model"] = "ULPSoilMonitor v2.0";
+}
+
+static String get_topic(String object_id)
+{
+	return String("homeassistant/sensor/") + String(HOSTNAME) + String("/") + String(object_id) + String("/");
+}
+
+static String get_topic(const char object_id[])
+{
+	return get_topic(String(object_id));
+}
+
+static String get_unique_id(String object_id)
+{
+	return String(HOSTNAME) + String("_") + String(object_id);
+}
+
+static String get_unique_id(const char object_id[])
+{
+	return get_unique_id(String(object_id));
+}
+
+static void publish_sensor_config_vcc()
+{
+	String topic = get_topic("vcc");
+	String id = get_unique_id("vcc");
 
 	StaticJsonDocument<512> config;
+	config["unique_id"] = id;
 	config["name"] = id;
 	config["state_topic"] = topic + "state";
 	config["unit_of_measurement"] = "V";
-	config["unique_id"] = id;
 
 	JsonObject dev = config.createNestedObject("device");
-	dev["name"] = HOSTNAME;
-	dev["identifiers"] = HOSTNAME;
-	dev["manufacturer"] = "Flobs";
-	dev["model"] = "ULPSoilMonitor v2.0";
+	get_device(&dev);
 
 	size_t message_size = measureJson(config);
 	mqtt.beginPublish((topic + "config").c_str(), message_size, true);
 	serializeJson(config, mqtt);
 	mqtt.endPublish();
+
+}
+
+static void publish_sensor_config_soil(uint8_t index)
+{
+
+	String object_id = String("soil") + String(index);
+	String topic = get_topic(object_id);
+	String id = get_unique_id(object_id);
+
+	StaticJsonDocument<512> config;
+	config["unique_id"] = id;
+	config["name"] = id;
+	config["state_topic"] = topic + "state";
+	config["unit_of_measurement"] = "%";
+
+	JsonObject dev = config.createNestedObject("device");
+	get_device(&dev);
+
+	size_t message_size = measureJson(config);
+	mqtt.beginPublish((topic + "config").c_str(), message_size, true);
+	serializeJson(config, mqtt);
+	mqtt.endPublish();
+}
+
+static void publish_sensor_config()
+{
+	publish_sensor_config_vcc();
+
+	for (uint8_t index = 0; index < 6; index++)
+		publish_sensor_config_soil(index);
+}
+
+static void publish_vcc()
+{
+	String topic = get_topic("vcc");
+	String id = get_unique_id("vcc");
 
 	String vcc = String(soil.vcc);
 	mqtt.publish((topic + "state").c_str(), vcc.c_str(), true);
@@ -339,25 +412,9 @@ static void publish_vcc()
 
 static void publish_soil(uint8_t index, float value)
 {
-	String topic = String("homeassistant/sensor/") + String(HOSTNAME) +  String("/soil") + String(index) + String("/");
-	String id = String(HOSTNAME) + String("_soil") + String(index);
-
-	StaticJsonDocument<512> config;
-	config["name"] = id;
-	config["state_topic"] = topic + "state";
-	config["unit_of_measurement"] = "%";
-	config["unique_id"] = id;
-
-	JsonObject dev = config.createNestedObject("device");
-	dev["name"] = HOSTNAME;
-	dev["identifiers"] = HOSTNAME;
-	dev["manufacturer"] = "Flobs";
-	dev["model"] = "ULPSoilMonitor v2.0";
-
-	size_t message_size = measureJson(config);
-	mqtt.beginPublish((topic + "config").c_str(), message_size, true);
-	serializeJson(config, mqtt);
-	mqtt.endPublish();
+	String object_id = String("soil") + String(index);
+	String topic = get_topic(object_id);
+	String id = get_unique_id(object_id);
 
 	mqtt.publish((topic + "state").c_str(), String(value).c_str(), true);
 }
