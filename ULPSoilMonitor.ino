@@ -310,7 +310,7 @@ static float soil_moisture(uint16_t adc_value, float vcc, float offset, float gr
 
 static void calculate_soil_data()
 {
-	if (isnan(soil.valid))
+	if (isnan(soil.vcc) or soil.vcc == 0.0)
 		return;
 
 	init_sensor_coefficients();
@@ -436,7 +436,11 @@ static void publish_soil(uint8_t index, float value)
 
 static void publish_soil_data()
 {
+	if (!soil.valid)
+		return;
+
 	publish_vcc();
+
 	publish_soil(0, soil.soil0);
 	publish_soil(1, soil.soil1);
 	publish_soil(2, soil.soil2);
