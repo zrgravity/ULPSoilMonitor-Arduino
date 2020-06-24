@@ -78,11 +78,17 @@ static void print_soil_data();
 /* publish sensor config */
 static void publish_sensor_config();
 
+static void publish_system_config();
+
 /* publish current soil_data via MQTT */
 static void publish_soil_data();
 
+static void publish_system_data();
+
 void setup() {
 	Serial.begin(115200);
+
+	ulp_reboots += 1;
 
 	WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
 		Serial.printf("WiFi connected & got IP\n");
@@ -128,6 +134,9 @@ void loop() {
 
 		esp_err_t err = ulptool_load_binary(0, ulp_main_bin_start, (ulp_main_bin_end - ulp_main_bin_start) / sizeof(uint32_t));
 		ESP_ERROR_CHECK(err);
+
+		ulp_reboots = 0;
+		ulp_runs = 0;
 
 		/* Set ULP wake up period */
 		ulp_set_wakeup_period(0, ULP_PERIOD_MS * 1000);
@@ -175,12 +184,14 @@ void loop() {
 	if (state == ULPSM_PUBLISHING_CONFIG) {
 		Serial.printf("Publishing config...\n");
 		publish_sensor_config();
+		publish_system_config();
 		state = ULPSM_PUBLISHED_CONFIG;
 	}
 
 	if (state == ULPSM_PUBLISHING_DATA) {
 		Serial.printf("Publishing data...\n");
 		publish_soil_data();
+		publish_system_data();
 		state = ULPSM_PUBLISHED_DATA;
 	}
 
@@ -204,6 +215,8 @@ void loop() {
 
 	if (state == ULPSM_DONE) {
 		Serial.printf("Starting ULP & entering deep sleep\n\n");
+
+		ulp_runs = 0;
 		start_ulp_program();
 
 		ESP_ERROR_CHECK(esp_sleep_enable_ulp_wakeup());
@@ -416,6 +429,32 @@ static void publish_sensor_config()
 		publish_sensor_config_soil(index);
 }
 
+static void publish_system_config_entry(String name, String uom)
+{
+	String topic = get_topic(name);
+	String id = get_unique_id(name);
+
+	StaticJsonDocument<512> config;
+	config["unique_id"] = id;
+	config["name"] = id;
+	config["state_topic"] = topic + "state";
+	config["unit_of_measurement"] = uom;
+
+	JsonObject dev = config.createNestedObject("device");
+	get_device(&dev);
+
+	size_t message_size = measureJson(config);
+	mqtt.beginPublish((topic + "config").c_str(), message_size, true);
+	serializeJson(config, mqtt);
+	mqtt.endPublish();
+}
+
+static void publish_system_config()
+{
+	publish_system_config_entry(String("reboots"), String("#"));
+	publish_system_config_entry(String("ulp_runs"), String("#"));
+}
+
 static void publish_vcc()
 {
 	String topic = get_topic("vcc");
@@ -447,4 +486,11 @@ static void publish_soil_data()
 	publish_soil(3, soil.soil3);
 	publish_soil(4, soil.soil4);
 	publish_soil(5, soil.soil5);
+}
+
+static void publish_system_data()
+{
+	mqtt.publish((get_topic(String("reboots")) + "state").c_str(), String((uint16_t)ulp_reboots).c_str(), true);
+	mqtt.publish((get_topic(String("ulp_runs")) + "state").c_str(), String((uint16_t)ulp_runs).c_str(), true);
+
 }

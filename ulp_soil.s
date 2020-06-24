@@ -76,11 +76,25 @@ soil5:
 
 soil5_shadow:
   .long 0
-  
+
+  .global reboots
+reboots:
+  .long 0
+
+  .global runs
+runs:
+  .long 0
+
   /* Entry point into code. */
   .text
   .global entry
 entry:
+
+  /* increment ulp_runs counter by one */
+  move r0, runs
+  ld r1, r0, 0
+  add r1, r1, 1
+  st r1, r0, 0
 
   /* set GPIO25/RTC_GPIO06 low to enable moisture sensors */
 enable_sensors:

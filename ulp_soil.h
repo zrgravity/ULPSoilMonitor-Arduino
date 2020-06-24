@@ -8,3 +8,6 @@ extern uint32_t ulp_soil2;
 extern uint32_t ulp_soil3;
 extern uint32_t ulp_soil4;
 extern uint32_t ulp_soil5;
+
+extern uint32_t ulp_reboots;
+extern uint32_t ulp_runs;
