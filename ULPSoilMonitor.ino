@@ -10,9 +10,14 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 
 #define ADC_FACTOR (3.5f)
 #define ADC_VCC_PIN (ADC2_CHANNEL_9)
+
+#define PREFNAME "ULPSM"
+
+static Preferences prefs;
 
 extern const uint8_t ulp_main_bin_start[] asm("_binary_ulp_main_bin_start");
 extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
@@ -296,21 +301,25 @@ static void measure_vcc()
 	}
 }
 
-static void  init_sensor_coefficients()
+static void init_sensor_coefficients()
 {
-	sensor_offset.soil0 = 1.746;
-	sensor_offset.soil1 = 1.746;
-	sensor_offset.soil2 = 1.746;
-	sensor_offset.soil3 = 1.746;
-	sensor_offset.soil4 = 1.746;
-	sensor_offset.soil5 = 1.746;
+	prefs.begin(PREFNAME, true);
 
-	sensor_gradient.soil0 = -2.849;
-	sensor_gradient.soil1 = -2.849;
-	sensor_gradient.soil2 = -2.849;
-	sensor_gradient.soil3 = -2.849;
-	sensor_gradient.soil4 = -2.849;
-	sensor_gradient.soil5 = -2.849;
+	sensor_offset.soil0 = prefs.getFloat("offset_0", 1.746);
+	sensor_offset.soil1 = prefs.getFloat("offset_1", 1.746);
+	sensor_offset.soil2 = prefs.getFloat("offset_2", 1.746);
+	sensor_offset.soil3 = prefs.getFloat("offset_3", 1.746);
+	sensor_offset.soil4 = prefs.getFloat("offset_4", 1.746);
+	sensor_offset.soil5 = prefs.getFloat("offset_5", 1.746);
+
+	sensor_gradient.soil0 = prefs.getFloat("gradient_0", -2.849);
+	sensor_gradient.soil1 = prefs.getFloat("gradient_1", -2.849);
+	sensor_gradient.soil2 = prefs.getFloat("gradient_2", -2.849);
+	sensor_gradient.soil3 = prefs.getFloat("gradient_3", -2.849);
+	sensor_gradient.soil4 = prefs.getFloat("gradient_4", -2.849);
+	sensor_gradient.soil5 = prefs.getFloat("gradient_5", -2.849);
+
+	prefs.end();
 }
 
 static float soil_moisture(uint16_t adc_value, float vcc, float offset, float gradient)
