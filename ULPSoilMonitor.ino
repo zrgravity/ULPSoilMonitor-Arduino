@@ -25,14 +25,25 @@ extern const uint8_t ulp_main_bin_end[]   asm("_binary_ulp_main_bin_end");
 volatile enum ulpsm_states {
 	ULPSM_RESETTING,
 	ULPSM_SETUP,
+
 	ULPSM_CONNECTING_WIFI,
 	ULPSM_CONNECTING_MQTT,
+
+	ULPSM_CONNECTED,
+
 	ULPSM_PUBLISHING_CONFIG,
 	ULPSM_PUBLISHED_CONFIG,
 	ULPSM_PUBLISHING_DATA,
 	ULPSM_PUBLISHED_DATA,
+
+	ULPSM_ADJUSTMENT_STARTED,
+	ULPSM_ADJUSTMENT_MEASURE_LOW_VALUE,
+	ULPSM_ADJUSTMENT_MEASURE_HIGH_VALUE,
+	ULPSM_ADJUSTMENT_CALCULATING,
+
 	ULPSM_DISCONNECTING_MQTT,
 	ULPSM_DISCONNECTING_WIFI,
+
 	ULPSM_DONE,
 } state;
 
@@ -90,6 +101,10 @@ static void publish_soil_data();
 
 static void publish_system_data();
 
+static void mqtt_callback(const char* topic, byte* payload, unsigned int length);
+
+static void init_adjustment_topic();
+
 void setup() {
 	Serial.begin(115200);
 
@@ -99,6 +114,7 @@ void setup() {
 
 	WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
 		Serial.printf("WiFi connected & got IP\n");
+		mqtt.setCallback(mqtt_callback);
 		mqtt.connect(HOSTNAME);
 		state = ULPSM_CONNECTING_MQTT;
 	}, WiFiEvent_t::SYSTEM_EVENT_STA_GOT_IP);
@@ -171,11 +187,10 @@ void loop() {
 		auto mqtt_state = mqtt.state();
 		if (mqtt_state == MQTT_CONNECTED) {
 			Serial.printf("MQTT connected.\n");
-			esp_reset_reason_t reason = esp_reset_reason();
-			if (reason == ESP_RST_DEEPSLEEP)
-				state = ULPSM_PUBLISHING_DATA;
-			else
-				state = ULPSM_PUBLISHING_CONFIG;
+
+			init_adjustment_topic();
+
+			state = ULPSM_CONNECTED;
 
 		} else if (mqtt_state == MQTT_CONNECTION_TIMEOUT || mqtt_state == MQTT_CONNECT_FAILED) {
 			Serial.printf("MQTT connection failed.\n");
@@ -188,6 +203,20 @@ void loop() {
 		} else {
 			Serial.printf("MQTT unkown error: %d\n", mqtt_state);
 			state = ULPSM_DONE;
+		}
+	}
+
+	if (state == ULPSM_CONNECTED) {
+		esp_reset_reason_t reason = esp_reset_reason();
+		if (reason == ESP_RST_DEEPSLEEP) {
+			state = ULPSM_PUBLISHING_DATA;
+		} else {
+			static auto connection_time = 0;
+			if (!connection_time) {
+				connection_time = millis();
+			} else if (millis() - connection_time > 750) {
+				state = ULPSM_PUBLISHING_CONFIG;
+			}
 		}
 	}
 
@@ -204,16 +233,32 @@ void loop() {
 		publish_vcc();
 		publish_soil_data();
 		publish_system_data();
+
+		mqtt.loop();
+
 		state = ULPSM_PUBLISHED_DATA;
 	}
 
 	if (state == ULPSM_PUBLISHED_DATA || state == ULPSM_PUBLISHED_CONFIG) {
+		Serial.printf("About to disconnect.\n");
 		wifi_client.flush();
 		mqtt.loop();
 		wifi_client.flush();
 
-		mqtt.disconnect();
-		state = ULPSM_DISCONNECTING_MQTT;
+		if (!wifi_client.available()) {
+			mqtt.disconnect();
+			state = ULPSM_DISCONNECTING_MQTT;
+		}
+	}
+
+	if (state == ULPSM_ADJUSTMENT_STARTED) {
+		;
+	}
+
+	if (state == ULPSM_ADJUSTMENT_CALCULATING) {
+		Serial.printf("Adjustment calculation...\n");
+
+		state = ULPSM_PUBLISHING_CONFIG;
 	}
 
 	if (state == ULPSM_DISCONNECTING_MQTT) {
@@ -469,6 +514,7 @@ static void publish_system_config()
 {
 	publish_system_config_entry(String("reboots"), String("#"));
 	publish_system_config_entry(String("ulp_runs"), String("#"));
+	publish_system_config_entry(String("adjustment"), String(""));
 }
 
 static void publish_vcc()
@@ -510,4 +556,34 @@ static void publish_system_data()
 	mqtt.publish((get_topic(String("reboots")) + "state").c_str(), String((uint16_t)ulp_reboots).c_str(), true);
 	mqtt.publish((get_topic(String("ulp_runs")) + "state").c_str(), String((uint16_t)ulp_runs).c_str(), true);
 
+}
+
+static void mqtt_callback(const char* topic, byte* payload, unsigned int length)
+{
+	String adjustment_topic = get_topic("adjustment") + "state";
+
+	if (adjustment_topic.equals(String(topic))) {
+		if (state == ULPSM_CONNECTED) {
+			if (String("start").equals(String((char *)payload)))
+				state = ULPSM_ADJUSTMENT_STARTED;
+
+		} else if (state == ULPSM_CONNECTED) {
+			if (String("low").equals(String((char *)payload)))
+				state = ULPSM_ADJUSTMENT_MEASURE_LOW_VALUE;
+			else if (String("high").equals(String((char *)payload)))
+				state = ULPSM_ADJUSTMENT_MEASURE_HIGH_VALUE;
+
+		}
+	}
+}
+
+static void init_adjustment_topic()
+{
+	String topic = get_topic("adjustment") + "state";
+
+	Serial.printf("Subscribing %s\n", topic.c_str());
+
+	mqtt.subscribe(topic.c_str(), 0);
+
+	mqtt.loop();
 }
