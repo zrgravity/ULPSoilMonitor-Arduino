@@ -88,6 +88,8 @@ static void publish_system_data();
 void setup() {
 	Serial.begin(115200);
 
+	Serial.printf("This is %s\n", HOSTNAME);
+
 	ulp_reboots += 1;
 
 	WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
@@ -146,6 +148,7 @@ void loop() {
 
 	if (state == ULPSM_SETUP) {
 		Serial.printf("Setup WiFi, MQTT, Soil data...\n");
+		measure_vcc();
 
 		WiFi.begin(STA_SSID, STA_PASSWD);
 
@@ -153,6 +156,8 @@ void loop() {
 
 		calculate_soil_data();
 		print_soil_data();
+
+		Serial.printf("VCC: %f\n", soil.vcc);
 
 		state = ULPSM_CONNECTING_WIFI;
 	}
@@ -185,11 +190,13 @@ void loop() {
 		Serial.printf("Publishing config...\n");
 		publish_sensor_config();
 		publish_system_config();
+		publish_vcc();
 		state = ULPSM_PUBLISHED_CONFIG;
 	}
 
 	if (state == ULPSM_PUBLISHING_DATA) {
 		Serial.printf("Publishing data...\n");
+		publish_vcc();
 		publish_soil_data();
 		publish_system_data();
 		state = ULPSM_PUBLISHED_DATA;
@@ -457,6 +464,9 @@ static void publish_system_config()
 
 static void publish_vcc()
 {
+	if (isnan(soil.vcc) or soil.vcc == 0.0)
+		return;
+
 	String topic = get_topic("vcc");
 	String id = get_unique_id("vcc");
 
@@ -477,8 +487,6 @@ static void publish_soil_data()
 {
 	if (!soil.valid)
 		return;
-
-	publish_vcc();
 
 	publish_soil(0, soil.soil0);
 	publish_soil(1, soil.soil1);
