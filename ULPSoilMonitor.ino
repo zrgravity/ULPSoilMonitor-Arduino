@@ -15,6 +15,9 @@
 #define ADC_FACTOR (3.5f)
 #define ADC_VCC_PIN (ADC2_CHANNEL_9)
 
+#define DEFAULT_SENSOR_OFFSET (1.746f)
+#define DEFAULT_SENSOR_GRADIENT (-2.849f)
+
 #define PREFNAME "ULPSM"
 
 static Preferences prefs;
@@ -36,17 +39,19 @@ volatile enum ulpsm_states {
 	ULPSM_PUBLISHING_DATA,
 	ULPSM_PUBLISHED_DATA,
 
-	ULPSM_ADJUSTMENT_STARTED,
+	ULPSM_ADJUSTMENT_START,
+	ULPSM_ADJUSTMENT_IDLE,
 	ULPSM_ADJUSTMENT_MEASURE_LOW_VALUE,
 	ULPSM_ADJUSTMENT_MEASURE_HIGH_VALUE,
 	ULPSM_ADJUSTMENT_CALCULATING,
+	ULPSM_ADJUSTMENT_ABORT,
+	ULPSM_ADJUSTMENT_RESET,
 
 	ULPSM_DISCONNECTING_MQTT,
 	ULPSM_DISCONNECTING_WIFI,
 
 	ULPSM_DONE,
 } state;
-
 
 struct {
 	float soil0;
@@ -68,6 +73,20 @@ struct soil_data {
 	bool valid = false;
 } soil;
 
+struct adjustment_data {
+	int low_value = 0;
+	int high_value = 0;
+} adjustments[6];
+
+adc1_channel_t sensor_map[] = {
+	ADC1_CHANNEL_7,
+	ADC1_CHANNEL_4,
+	ADC1_CHANNEL_5,
+	ADC1_CHANNEL_6,
+	ADC1_CHANNEL_3,
+	ADC1_CHANNEL_0,
+};
+
 WiFiClient wifi_client;
 PubSubClient mqtt(wifi_client);
 
@@ -78,10 +97,15 @@ static void init_ulp_periphery();
  */
 static void start_ulp_program();
 
+static void activate_sensors();
+static void deactivate_sensors();
+
 /* measures voltage on ADC_VCC_PIN(GPIO26) */
 static void measure_vcc();
 
 static void init_sensor_coefficients();
+static void store_sensor_coefficients();
+static void reset_sensor_coefficients();
 
 static float soil_moisture(uint16_t adc_value, float vcc, float offset, float gradient);
 
@@ -104,6 +128,12 @@ static void publish_system_data();
 static void mqtt_callback(const char* topic, byte* payload, unsigned int length);
 
 static void init_adjustment_topic();
+
+static int measure_sensor(int sensor);
+
+static void calculate_adjustment();
+
+static void publish_adjustement_state(const char* state);
 
 void setup() {
 	Serial.begin(115200);
@@ -251,14 +281,72 @@ void loop() {
 		}
 	}
 
-	if (state == ULPSM_ADJUSTMENT_STARTED) {
-		;
+	if (state == ULPSM_ADJUSTMENT_START) {
+		Serial.printf("Adjustment starting...\n");
+
+		activate_sensors();
+
+		Serial.printf("Activated sensors.\n");
+
+		publish_adjustement_state("started");
+
+		state = ULPSM_ADJUSTMENT_IDLE;
+	}
+
+	if (state == ULPSM_ADJUSTMENT_MEASURE_LOW_VALUE) {
+		for (auto i = 0; i < 6; i++) {
+			adjustments[i].low_value = measure_sensor(i);
+			Serial.printf("Got low value %i on sensor %i\n", adjustments[i].low_value, i);
+		}
+
+		publish_adjustement_state("idle");
+
+		state = ULPSM_ADJUSTMENT_IDLE;
+	}
+
+	if (state == ULPSM_ADJUSTMENT_MEASURE_HIGH_VALUE) {
+		for (auto i = 0; i < 6; i++) {
+			adjustments[i].high_value = measure_sensor(i);
+			Serial.printf("Got high value %i on sensor %i\n", adjustments[i].high_value, i);
+		}
+
+		publish_adjustement_state("idle");
+
+		state = ULPSM_ADJUSTMENT_IDLE;
 	}
 
 	if (state == ULPSM_ADJUSTMENT_CALCULATING) {
 		Serial.printf("Adjustment calculation...\n");
 
+		deactivate_sensors();
+
+		calculate_adjustment();
+
+		store_sensor_coefficients();
+
+		publish_adjustement_state("done");
+
 		state = ULPSM_PUBLISHING_CONFIG;
+	}
+
+	if (state == ULPSM_ADJUSTMENT_ABORT) {
+		Serial.printf("Adjustment aborting...\n");
+
+		deactivate_sensors();
+
+		publish_adjustement_state("aborted");
+
+		state = ULPSM_RESETTING;
+	}
+
+	if (state == ULPSM_ADJUSTMENT_RESET) {
+		Serial.printf("Adjustment resetting...\n");
+
+		reset_sensor_coefficients();
+
+		publish_adjustement_state("idle");
+
+		state = ULPSM_ADJUSTMENT_IDLE;
 	}
 
 	if (state == ULPSM_DISCONNECTING_MQTT) {
@@ -319,10 +407,8 @@ static void start_ulp_program()
 	ESP_ERROR_CHECK(err);
 }
 
-static void measure_vcc()
+static void activate_sensors()
 {
-	int raw;
-
 	gpio_reset_pin(GPIO_NUM_25);
 	gpio_pad_select_gpio(GPIO_NUM_25);
 	gpio_hold_dis(GPIO_NUM_25);
@@ -330,12 +416,25 @@ static void measure_vcc()
 	gpio_set_level(GPIO_NUM_25, 0);
 
 	vTaskDelay(10);
+}
+
+static void deactivate_sensors()
+{
+	gpio_set_level(GPIO_NUM_25, 1);
+	gpio_hold_en(GPIO_NUM_25);
+}
+
+
+static void measure_vcc()
+{
+	int raw;
+
+	activate_sensors();
 
 	adc2_config_channel_atten(ADC_VCC_PIN, ADC_ATTEN_DB_0);
 	esp_err_t r = adc2_get_raw(ADC_VCC_PIN, ADC_WIDTH_12Bit, &raw);
 
-	gpio_set_level(GPIO_NUM_25, 1);
-	gpio_hold_en(GPIO_NUM_25);
+	deactivate_sensors();
 
 	if (r != ESP_OK) {
 		soil.vcc = NAN;
@@ -350,21 +449,65 @@ static void init_sensor_coefficients()
 {
 	prefs.begin(PREFNAME, true);
 
-	sensor_offset.soil0 = prefs.getFloat("offset_0", 1.746);
-	sensor_offset.soil1 = prefs.getFloat("offset_1", 1.746);
-	sensor_offset.soil2 = prefs.getFloat("offset_2", 1.746);
-	sensor_offset.soil3 = prefs.getFloat("offset_3", 1.746);
-	sensor_offset.soil4 = prefs.getFloat("offset_4", 1.746);
-	sensor_offset.soil5 = prefs.getFloat("offset_5", 1.746);
+	sensor_offset.soil0 = prefs.getFloat("offset_0", DEFAULT_SENSOR_OFFSET);
+	sensor_offset.soil1 = prefs.getFloat("offset_1", DEFAULT_SENSOR_OFFSET);
+	sensor_offset.soil2 = prefs.getFloat("offset_2", DEFAULT_SENSOR_OFFSET);
+	sensor_offset.soil3 = prefs.getFloat("offset_3", DEFAULT_SENSOR_OFFSET);
+	sensor_offset.soil4 = prefs.getFloat("offset_4", DEFAULT_SENSOR_OFFSET);
+	sensor_offset.soil5 = prefs.getFloat("offset_5", DEFAULT_SENSOR_OFFSET);
 
-	sensor_gradient.soil0 = prefs.getFloat("gradient_0", -2.849);
-	sensor_gradient.soil1 = prefs.getFloat("gradient_1", -2.849);
-	sensor_gradient.soil2 = prefs.getFloat("gradient_2", -2.849);
-	sensor_gradient.soil3 = prefs.getFloat("gradient_3", -2.849);
-	sensor_gradient.soil4 = prefs.getFloat("gradient_4", -2.849);
-	sensor_gradient.soil5 = prefs.getFloat("gradient_5", -2.849);
+	sensor_gradient.soil0 = prefs.getFloat("gradient_0", DEFAULT_SENSOR_GRADIENT);
+	sensor_gradient.soil1 = prefs.getFloat("gradient_1", DEFAULT_SENSOR_GRADIENT);
+	sensor_gradient.soil2 = prefs.getFloat("gradient_2", DEFAULT_SENSOR_GRADIENT);
+	sensor_gradient.soil3 = prefs.getFloat("gradient_3", DEFAULT_SENSOR_GRADIENT);
+	sensor_gradient.soil4 = prefs.getFloat("gradient_4", DEFAULT_SENSOR_GRADIENT);
+	sensor_gradient.soil5 = prefs.getFloat("gradient_5", DEFAULT_SENSOR_GRADIENT);
 
 	prefs.end();
+}
+
+static void store_sensor_coefficients()
+{
+	prefs.begin(PREFNAME);
+
+	prefs.putFloat("offset_0", sensor_offset.soil0);
+	prefs.putFloat("offset_1", sensor_offset.soil1);
+	prefs.putFloat("offset_2", sensor_offset.soil2);
+	prefs.putFloat("offset_3", sensor_offset.soil3);
+	prefs.putFloat("offset_4", sensor_offset.soil4);
+	prefs.putFloat("offset_5", sensor_offset.soil5);
+
+	prefs.putFloat("gradient_0", sensor_gradient.soil0);
+	prefs.putFloat("gradient_1", sensor_gradient.soil1);
+	prefs.putFloat("gradient_2", sensor_gradient.soil2);
+	prefs.putFloat("gradient_3", sensor_gradient.soil3);
+	prefs.putFloat("gradient_4", sensor_gradient.soil4);
+	prefs.putFloat("gradient_5", sensor_gradient.soil5);
+
+	prefs.end();
+}
+
+static void reset_sensor_coefficients()
+{
+	prefs.begin(PREFNAME);
+
+	prefs.putFloat("offset_0", DEFAULT_SENSOR_OFFSET);
+	prefs.putFloat("offset_1", DEFAULT_SENSOR_OFFSET);
+	prefs.putFloat("offset_2", DEFAULT_SENSOR_OFFSET);
+	prefs.putFloat("offset_3", DEFAULT_SENSOR_OFFSET);
+	prefs.putFloat("offset_4", DEFAULT_SENSOR_OFFSET);
+	prefs.putFloat("offset_5", DEFAULT_SENSOR_OFFSET);
+
+	prefs.putFloat("gradient_0", DEFAULT_SENSOR_GRADIENT);
+	prefs.putFloat("gradient_1", DEFAULT_SENSOR_GRADIENT);
+	prefs.putFloat("gradient_2", DEFAULT_SENSOR_GRADIENT);
+	prefs.putFloat("gradient_3", DEFAULT_SENSOR_GRADIENT);
+	prefs.putFloat("gradient_4", DEFAULT_SENSOR_GRADIENT);
+	prefs.putFloat("gradient_5", DEFAULT_SENSOR_GRADIENT);
+
+	prefs.end();
+
+	init_sensor_coefficients();
 }
 
 static float soil_moisture(uint16_t adc_value, float vcc, float offset, float gradient)
@@ -563,16 +706,41 @@ static void mqtt_callback(const char* topic, byte* payload, unsigned int length)
 	String adjustment_topic = get_topic("adjustment") + "state";
 
 	if (adjustment_topic.equals(String(topic))) {
-		if (state == ULPSM_CONNECTED) {
-			if (String("start").equals(String((char *)payload)))
-				state = ULPSM_ADJUSTMENT_STARTED;
+		char *command_data = (char *)malloc(length + 1);
+		memcpy(command_data, payload, length);
+		command_data[length] = '\0';
 
-		} else if (state == ULPSM_CONNECTED) {
-			if (String("low").equals(String((char *)payload)))
+		String command = String((char *)command_data);
+
+		Serial.printf("Adjustment command: '%s'\n", command);
+
+		if (state == ULPSM_CONNECTED) {
+			if (command.equals(String("start"))) {
+				Serial.printf("Starting adjustment.\n");
+				state = ULPSM_ADJUSTMENT_START;
+			}
+
+		} else if (state == ULPSM_ADJUSTMENT_IDLE) {
+			if (command.equals(String("low"))) {
+				Serial.printf("Measuring low value.\n");
 				state = ULPSM_ADJUSTMENT_MEASURE_LOW_VALUE;
-			else if (String("high").equals(String((char *)payload)))
+
+			} else if (command.equals(String("high"))) {
+				Serial.printf("Measuring high value.\n");
 				state = ULPSM_ADJUSTMENT_MEASURE_HIGH_VALUE;
 
+			} else if (command.equals(String("calculate"))) {
+				Serial.printf("Calculating adjustment.\n");
+				state = ULPSM_ADJUSTMENT_CALCULATING;
+
+			} else if (command.equals(String("abort"))) {
+				Serial.printf("Aborting adjustment.\n");
+				state = ULPSM_ADJUSTMENT_ABORT;
+
+			} else if (command.equals(String("reset"))) {
+				Serial.printf("Resetting adjustment.\n");
+				state = ULPSM_ADJUSTMENT_RESET;
+			}
 		}
 	}
 }
@@ -586,4 +754,49 @@ static void init_adjustment_topic()
 	mqtt.subscribe(topic.c_str(), 0);
 
 	mqtt.loop();
+}
+
+static int measure_sensor(int sensor)
+{
+	adc1_channel_t channel = sensor_map[sensor];
+
+	adc1_config_channel_atten(channel, ADC_ATTEN_DB_0);
+	adc1_config_width(ADC_WIDTH_BIT_12);
+
+	return adc1_get_raw(channel);
+}
+
+static void calculate_adjustment_sensor(int sensor, float &offset, float &gradient)
+{
+	struct adjustment_data adj = adjustments[sensor];
+
+	float low = ((float)adj.low_value * ADC_FACTOR) / 4095;
+	float high = ((float)adj.high_value * ADC_FACTOR) / 4095;
+
+	float vcc = soil.vcc;
+
+	if (low == 0.0 || high == 0.0 || vcc == 0.0) {
+		Serial.printf("Skipping sensor %i\n", sensor);
+	} else {
+		gradient = 1 / (high / vcc - low / vcc);
+		offset = 1 - gradient * high / vcc;
+
+		Serial.printf("Sensor %i; %.3f, %.3f\n", sensor, offset, gradient);
+	}
+}
+
+static void calculate_adjustment()
+{
+	calculate_adjustment_sensor(0, sensor_offset.soil0, sensor_gradient.soil0);
+	calculate_adjustment_sensor(1, sensor_offset.soil1, sensor_gradient.soil1);
+	calculate_adjustment_sensor(2, sensor_offset.soil2, sensor_gradient.soil2);
+	calculate_adjustment_sensor(3, sensor_offset.soil3, sensor_gradient.soil3);
+	calculate_adjustment_sensor(4, sensor_offset.soil4, sensor_gradient.soil4);
+	calculate_adjustment_sensor(5, sensor_offset.soil5, sensor_gradient.soil5);
+}
+
+static void publish_adjustement_state(const char* state)
+{
+	String adjustment_topic = get_topic("adjustment") + "state";
+	mqtt.publish(adjustment_topic.c_str(), state, true);
 }
