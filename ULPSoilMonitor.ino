@@ -592,6 +592,7 @@ static void publish_sensor_config_vcc()
 	config["name"] = id;
 	config["state_topic"] = topic + "state";
 	config["unit_of_measurement"] = "V";
+	config["icon"] = "mdi:battery"
 
 	JsonObject dev = config.createNestedObject("device");
 	get_device(&dev);
@@ -616,6 +617,7 @@ static void publish_sensor_config_soil(uint8_t index)
 	config["state_topic"] = topic + "state";
 	config["unit_of_measurement"] = "%";
 	config["json_attributes_topic"] = topic + "attributes";
+	config["icon"] = "mdi:water-percent"
 
 	JsonObject dev = config.createNestedObject("device");
 	get_device(&dev);
@@ -634,7 +636,7 @@ static void publish_sensor_config()
 		publish_sensor_config_soil(index);
 }
 
-static void publish_system_config_entry(String name, String uom)
+static void publish_system_config_entry(String name, String uom, String icon)
 {
 	String topic = get_topic(name);
 	String id = get_unique_id(name);
@@ -644,6 +646,7 @@ static void publish_system_config_entry(String name, String uom)
 	config["name"] = id;
 	config["state_topic"] = topic + "state";
 	config["unit_of_measurement"] = uom;
+	config["icon"] = icon;
 
 	JsonObject dev = config.createNestedObject("device");
 	get_device(&dev);
@@ -656,9 +659,9 @@ static void publish_system_config_entry(String name, String uom)
 
 static void publish_system_config()
 {
-	publish_system_config_entry(String("reboots"), String("n"));
-	publish_system_config_entry(String("ulp_runs"), String("n"));
-	publish_system_config_entry(String("adjustment"), String(""));
+	publish_system_config_entry(String("reboots"), String("n"), String("mdi:restart"));
+	publish_system_config_entry(String("ulp_runs"), String("n"), String("mdi:restart-off"));
+	publish_system_config_entry(String("adjustment"), String(""), String("mdi:tune"));
 }
 
 static void publish_vcc()
