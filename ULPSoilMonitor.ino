@@ -615,6 +615,7 @@ static void publish_sensor_config_soil(uint8_t index)
 	config["name"] = id;
 	config["state_topic"] = topic + "state";
 	config["unit_of_measurement"] = "%";
+	config["json_attributes_topic"] = topic + "attributes";
 
 	JsonObject dev = config.createNestedObject("device");
 	get_device(&dev);
@@ -681,17 +682,38 @@ static void publish_soil(uint8_t index, float value)
 	mqtt.publish((topic + "state").c_str(), String(value).c_str(), true);
 }
 
+static void publish_soil_attributes(uint8_t index, float offset, float gradient)
+{
+	String object_id = String("soil") + String(index);
+	String topic = get_topic(object_id);
+
+	StaticJsonDocument<512> attributes;
+	attributes["offset"] = offset;
+	attributes["gradient"] = gradient;
+
+	size_t message_size = measureJson(attributes);
+	mqtt.beginPublish((topic + "attributes").c_str(), message_size, true);
+	serializeJson(attributes, mqtt);
+	mqtt.endPublish();
+}
+
 static void publish_soil_data()
 {
 	if (!soil.valid)
 		return;
 
 	publish_soil(0, soil.soil0);
+	publish_soil_attributes(0, sensor_offset.soil0, sensor_gradient.soil0);
 	publish_soil(1, soil.soil1);
+	publish_soil_attributes(1, sensor_offset.soil1, sensor_gradient.soil1);
 	publish_soil(2, soil.soil2);
+	publish_soil_attributes(2, sensor_offset.soil2, sensor_gradient.soil2);
 	publish_soil(3, soil.soil3);
+	publish_soil_attributes(3, sensor_offset.soil3, sensor_gradient.soil3);
 	publish_soil(4, soil.soil4);
+	publish_soil_attributes(4, sensor_offset.soil4, sensor_gradient.soil4);
 	publish_soil(5, soil.soil5);
+	publish_soil_attributes(5, sensor_offset.soil5, sensor_gradient.soil5);
 }
 
 static void publish_system_data()
