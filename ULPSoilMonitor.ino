@@ -656,8 +656,8 @@ static void publish_system_config_entry(String name, String uom)
 
 static void publish_system_config()
 {
-	publish_system_config_entry(String("reboots"), String("#"));
-	publish_system_config_entry(String("ulp_runs"), String("#"));
+	publish_system_config_entry(String("reboots"), String("n"));
+	publish_system_config_entry(String("ulp_runs"), String("n"));
 	publish_system_config_entry(String("adjustment"), String(""));
 }
 
